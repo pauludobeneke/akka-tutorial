@@ -133,20 +133,21 @@ public class LargeMessageProxy extends AbstractLoggingActor {
 		// TODO: With option a): Store the message, ask for the next chunk and, if all chunks are present, reassemble the message's content, deserialize it and pass it to the receiver.
 		// The following code assumes that the transmitted bytes are the original message, which they shouldn't be in your proper implementation ;-)
 		if (globalMessageStore.length == 0) {
+			System.out.println(message.amount);
 			globalMessageStore = new byte[message.amount][CHUNK_SIZE];
 		}
 		messagesReceived += 1;
 		globalMessageStore[message.id] = message.bytes;
 
 		if (messagesReceived == message.amount) {
-			byte[] newMessage = new byte[0];
+			byte[] newMessage = new byte[message.amount*CHUNK_SIZE];
 			for (byte[] msg : globalMessageStore) {
-				System.arraycopy(msg, 0, newMessage, newMessage.length, msg.length);
+				System.arraycopy(msg, 0, newMessage, CHUNK_SIZE*message.id, msg.length);
 			}
-			LargeMessage<?> deserializedMessage;
+			Object deserializedMessage;
 			ByteArrayInputStream bis = new ByteArrayInputStream(newMessage);
 			ObjectInput in = new ObjectInputStream(bis);
-			deserializedMessage = (LargeMessage<?>) in.readObject();
+			deserializedMessage = (Object) in.readObject();
 			globalMessageStore = new byte[0][0];
 			messagesReceived = 0;
 			message.getReceiver().tell(deserializedMessage, message.getSender());
