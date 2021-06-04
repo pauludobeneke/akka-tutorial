@@ -5,6 +5,7 @@ import java.io.UnsupportedEncodingException;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.List;
+import java.util.stream.Collectors;
 
 import akka.actor.AbstractLoggingActor;
 import akka.actor.ActorRef;
@@ -49,6 +50,20 @@ public class Worker extends AbstractLoggingActor {
 		private BloomFilter welcomeData;
 	}
 	
+	@Data @NoArgsConstructor @AllArgsConstructor
+	public static class CrackPasswordMessage implements Serializable {
+		private static final long serialVersionUID = 8343040942748609599L;
+		private Master.Password password;
+		private int passwordLength;
+	}
+
+	@Data @NoArgsConstructor @AllArgsConstructor
+	public static class CrackHintMessage implements Serializable {
+		private static final long serialVersionUID = 8343942740408609599L;
+		private Master.Hint hint;
+		private List<Character> usedChars;
+	}
+
 	/////////////////
 	// Actor State //
 	/////////////////
@@ -85,6 +100,8 @@ public class Worker extends AbstractLoggingActor {
 				.match(MemberUp.class, this::handle)
 				.match(MemberRemoved.class, this::handle)
 				.match(WelcomeMessage.class, this::handle)
+				.match(CrackPasswordMessage.class, this::handle)
+				.match(CrackHintMessage.class, this::handle)
 				// TODO: Add further messages here to share work between Master and Worker actors
 				.matchAny(object -> this.log().info("Received unknown message: \"{}\"", object.toString()))
 				.build();
@@ -122,6 +139,31 @@ public class Worker extends AbstractLoggingActor {
 		final long transmissionTime = System.currentTimeMillis() - this.registrationTime;
 		this.log().info("WelcomeMessage with " + message.getWelcomeData().getSizeInMB() + " MB data received in " + transmissionTime + " ms.");
 	}
+
+	private void handle(CrackHintMessage message) {
+		// this.log().info("Cracking hint: " + message.hint.hashedHint + " for id: " + message.hint.passwordId);
+		for (Character missingCharacter : message.usedChars) {
+			char[] characterSubset = message.usedChars.stream().map(Object::toString).filter(c -> !c.equals(missingCharacter.toString())).collect(Collectors.joining()).toCharArray();
+			String crackedHint = heapPermutation(characterSubset, characterSubset.length, message.hint.hashedHint);
+			if (crackedHint != null) {
+				// this.log().info("Cracked hint: " + crackedHint);
+				this.largeMessageProxy.tell(new LargeMessageProxy.LargeMessage<>(new Master.CrackedHintMessage(message.hint.passwordId, missingCharacter), this.sender()), this.self());
+				// this.sender().tell(new Master.CrackedHintMessage(message.hint.passwordId, missingCharacter), this.getSelf());
+				break;
+			}
+		}
+	}
+	
+	private void handle(CrackPasswordMessage message) {
+		// this.log().info("Cracking PW: " + message.password.hashedPassword);
+		char[] characterSubset = message.password.includedChars.stream().map(Object::toString).collect(Collectors.joining()).toCharArray();
+		String crackedPassword = printAllKLengthRec(characterSubset, "", characterSubset.length, message.passwordLength, message.password.hashedPassword);
+		if (crackedPassword != null) {
+			// this.log().info("Cracked PW: " + crackedPassword);
+			this.largeMessageProxy.tell(new LargeMessageProxy.LargeMessage<>(new Master.CrackedPasswordMessage(message.password, crackedPassword), this.sender()), this.self());
+			// this.sender().tell(new Master.CrackedPasswordMessage(message.password, crackedPassword), this.getSelf());
+		}
+	}
 	
 	private String hash(String characters) {
 		try {
@@ -142,14 +184,20 @@ public class Worker extends AbstractLoggingActor {
 	// Generating all permutations of an array using Heap's Algorithm
 	// https://en.wikipedia.org/wiki/Heap's_algorithm
 	// https://www.geeksforgeeks.org/heaps-algorithm-for-generating-permutations/
-	private void heapPermutation(char[] a, int size, int n, List<String> l) {
+	private String heapPermutation(char[] a, int size, String hashedHint) {
 		// If size is 1, store the obtained permutation
-		if (size == 1)
-			l.add(new String(a));
+		if (size == 1) {
+			String permutation = new String(a);
+			if (hashedHint.equals(hash(permutation))) {
+				return permutation;
+			}
+		}
 
 		for (int i = 0; i < size; i++) {
-			heapPermutation(a, size - 1, n, l);
-
+			String result = heapPermutation(a, size - 1, hashedHint);
+			if (result != null) {
+				return result;
+			}
 			// If size is odd, swap first and last element
 			if (size % 2 == 1) {
 				char temp = a[0];
@@ -164,5 +212,36 @@ public class Worker extends AbstractLoggingActor {
 				a[size - 1] = temp;
 			}
 		}
+		return null;
+	}
+
+	// Print all possible strings of length k that can be formed from a set of n characters
+	// https://www.geeksforgeeks.org/print-all-combinations-of-given-length/
+	private String printAllKLengthRec(char[] set, String prefix, int n, int k, String hashedPassword) {
+    // Base case: k is 0,
+    // print prefix
+    if (k == 0) {
+			if (hashedPassword.equals(hash(prefix))) {
+				return prefix;
+			}
+			return null;
+    }
+ 
+    // One by one add all characters
+    // from set and recursively
+    // call for k equals to k-1
+    for (int i = 0; i < n; ++i) {
+
+			// Next character of input added
+			String newPrefix = prefix + set[i];
+				
+			// k is decreased, because
+			// we have added a new character
+			String result = printAllKLengthRec(set, newPrefix, n, k - 1, hashedPassword);
+			if (result != null){
+				return result;
+			}
+    }
+		return null;
 	}
 }
