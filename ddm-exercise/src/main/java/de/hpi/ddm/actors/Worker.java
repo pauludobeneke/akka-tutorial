@@ -141,27 +141,21 @@ public class Worker extends AbstractLoggingActor {
 	}
 
 	private void handle(CrackHintMessage message) {
-		// this.log().info("Cracking hint: " + message.hint.hashedHint + " for id: " + message.hint.passwordId);
 		for (Character missingCharacter : message.usedChars) {
 			char[] characterSubset = message.usedChars.stream().map(Object::toString).filter(c -> !c.equals(missingCharacter.toString())).collect(Collectors.joining()).toCharArray();
 			String crackedHint = heapPermutation(characterSubset, characterSubset.length, message.hint.hashedHint);
 			if (crackedHint != null) {
-				// this.log().info("Cracked hint: " + crackedHint);
 				this.largeMessageProxy.tell(new LargeMessageProxy.LargeMessage<>(new Master.CrackedHintMessage(message.hint.passwordId, missingCharacter), this.sender()), this.self());
-				// this.sender().tell(new Master.CrackedHintMessage(message.hint.passwordId, missingCharacter), this.getSelf());
 				break;
 			}
 		}
 	}
 	
 	private void handle(CrackPasswordMessage message) {
-		// this.log().info("Cracking PW: " + message.password.hashedPassword);
 		char[] characterSubset = message.password.includedChars.stream().map(Object::toString).collect(Collectors.joining()).toCharArray();
 		String crackedPassword = printAllKLengthRec(characterSubset, "", characterSubset.length, message.passwordLength, message.password.hashedPassword);
 		if (crackedPassword != null) {
-			// this.log().info("Cracked PW: " + crackedPassword);
 			this.largeMessageProxy.tell(new LargeMessageProxy.LargeMessage<>(new Master.CrackedPasswordMessage(message.password, crackedPassword), this.sender()), this.self());
-			// this.sender().tell(new Master.CrackedPasswordMessage(message.password, crackedPassword), this.getSelf());
 		}
 	}
 	

@@ -146,7 +146,7 @@ public class Master extends AbstractLoggingActor {
 	}
 	
 	protected void handle(BatchMessage message) {
-		
+
 		// TODO: This is where the task begins:
 		// - The Master received the first batch of input records.
 		// - To receive the next batch, we need to send another ReadMessage to the reader.
@@ -202,15 +202,12 @@ public class Master extends AbstractLoggingActor {
 		if(this.readingComplete && this.passwordTaskBuffer.size() == 0 && this.passwordTasks.size() == 0){
 			this.terminate();
 		}
-		// this.log().info("idle workers: " + this.idleWorkers.size() + " password tasks: " + this.passwordTasks.size() + " hint tasks: " + this.hintTasks.size());
 		while (this.idleWorkers.size() > 0 && (this.passwordTasks.size() > 0 || this.hintTasks.size() > 0)){
 			ActorRef worker = this.idleWorkers.removeFirst();
 			if(this.passwordTasks.size() > 0){
 				this.largeMessageProxy.tell(new LargeMessageProxy.LargeMessage<>(new Worker.CrackPasswordMessage(passwordTasks.removeFirst(), this.passwordLength), worker), this.self());
-				// worker.tell(new Worker.CrackPasswordMessage(passwordTasks.removeFirst(), this.passwordLength), getSelf());
 			} else {
 				this.largeMessageProxy.tell(new LargeMessageProxy.LargeMessage<>(new Worker.CrackHintMessage(hintTasks.removeFirst(), this.usedChars), worker), this.self());
-				// worker.tell(new Worker.CrackHintMessage(hintTasks.removeFirst(), this.usedChars), getSelf());
 			}
 		}
 
@@ -220,7 +217,6 @@ public class Master extends AbstractLoggingActor {
 		Password currentPassword = passwordTaskBuffer.get(message.getPasswordId());
 		currentPassword.includedChars.remove(message.missingCharacter);
 		currentPassword.amountOfUncrackedHints--;
-		// this.log().info("cur acc: " + currentPassword.name + "amount: " + currentPassword.amountOfUncrackedHints);
 		if (currentPassword.amountOfUncrackedHints > 0) {
 			passwordTaskBuffer.put(currentPassword.id, currentPassword);
 		} else {
