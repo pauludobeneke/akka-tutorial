@@ -228,7 +228,7 @@ public class Master extends AbstractLoggingActor {
 	}
 
 	protected void handle(CrackedPasswordMessage message) {
-		this.collector.tell(new Collector.CollectMessage(message.getPassword().getName() + "'s password is" + message.getCrackedPassword()), this.self());
+		this.collector.tell(new Collector.CollectMessage(message.getPassword().getName() + "'s password is " + message.getCrackedPassword()), this.self());
 		this.passwordTasks.remove(message.getPassword());
 		this.idleWorkers.add(this.sender());
 		this.assignAvailableWorkers();
