@@ -1,8 +1,8 @@
 package de.hpi.ddm.actors;
 
-import java.io.IOException;
 import java.io.Serializable;
 import java.util.Arrays;
+import java.util.HashMap;
 
 import com.twitter.chill.KryoPool;
 
@@ -22,9 +22,7 @@ public class LargeMessageProxy extends AbstractLoggingActor {
 	////////////////////////
 
 	public static final String DEFAULT_NAME = "largeMessageProxy";
-	static final int CHUNK_SIZE = 1024*1024;
-	private byte[][] globalMessageStore = new byte[0][0];
-	private int messagesReceived = 0;
+	static final int CHUNK_SIZE = 1024*128;
 	private KryoPool kryo = KryoPoolSingleton.get();
 
 	public static Props props() {
@@ -43,27 +41,47 @@ public class LargeMessageProxy extends AbstractLoggingActor {
 	}
 
 	@Data @NoArgsConstructor @AllArgsConstructor
-	public static class BytesMessage<T> implements Serializable {
-		private static final long serialVersionUID = 4057807743872319842L;
-		private T bytes;
-		private ActorRef sender;
-		private ActorRef receiver;
-	}
-	
-	@Data @NoArgsConstructor @AllArgsConstructor
 	public static class PartialBytesMessage implements Serializable {
 		private static final long serialVersionUID = 4057807739472319842L;
 		private byte[] bytes;
+		private int messageIdentifier;
+		private int chunkIdentifier;
+	}
+
+	@Data @NoArgsConstructor @AllArgsConstructor
+	public static class InitializeMessage implements Serializable {
+		private static final long serialVersionUID = 4031957807739472842L;
 		private ActorRef sender;
 		private ActorRef receiver;
-		private int id;
-		private int amount;
+		private int messageIdentifier;
+	}
+
+	@Data @NoArgsConstructor @AllArgsConstructor
+	public static class RequestNewChunkMessage implements Serializable {
+		private static final long serialVersionUID = 4057831907739472842L;
+		private int messageIdentifier;
+		private int chunkIdentifier;
+	}
+
+	@Data @NoArgsConstructor @AllArgsConstructor
+	public static class FinishedMessage implements Serializable {
+		private static final long serialVersionUID = 4007735783199472842L;
+		private int messageIdentifier;
 	}
 	
+	@Data @NoArgsConstructor @AllArgsConstructor
+	public static class MessageBuffer {
+		private ActorRef sender;
+		private ActorRef receiver;
+		private byte[] messageBuffer;
+	}
+
 	/////////////////
 	// Actor State //
 	/////////////////
-	
+	private HashMap<Integer, byte[][]> sendMessagesState = new HashMap<Integer, byte[][]>();
+	private HashMap<Integer, MessageBuffer> receivedMessagesState = new HashMap<Integer, MessageBuffer>();
+	private int curMessageId = 0; 
 	/////////////////////
 	// Actor Lifecycle //
 	/////////////////////
@@ -77,6 +95,9 @@ public class LargeMessageProxy extends AbstractLoggingActor {
 		return receiveBuilder()
 				.match(LargeMessage.class, this::handle)
 				.match(PartialBytesMessage.class, this::handle)
+				.match(InitializeMessage.class, this::handle)
+				.match(RequestNewChunkMessage.class, this::handle)
+				.match(FinishedMessage.class, this::handle)
 				.matchAny(object -> this.log().info("Received unknown message: \"{}\"", object.toString()))
 				.build();
 	}
@@ -101,36 +122,60 @@ public class LargeMessageProxy extends AbstractLoggingActor {
 		// - But: Good, language-dependent serializers (such as kryo) are aware of byte arrays so that their serialization is very effective w.r.t. serialization time and size of serialized data.
 		
 		byte[] serializedMessage = kryo.toBytesWithClass(message);
-		int amountOfChunks = (int)Math.ceil(serializedMessage.length / (double)CHUNK_SIZE);
-		int idx = 0;
-
-		for(int i = 0; i < amountOfChunks; i++) {
-				byte[] msg = Arrays.copyOfRange(serializedMessage,idx, idx + CHUNK_SIZE);
-				idx += CHUNK_SIZE;
-				//TODO: Write Send-Ack Protocol
-				receiverProxy.tell(new PartialBytesMessage(msg, sender, receiver, i, amountOfChunks), this.self());
-        }
+		byte[][] serializedMessageChunks = splitArray(serializedMessage);
+		sendMessagesState.put(curMessageId, serializedMessageChunks);
+		receiverProxy.tell(new InitializeMessage(sender, receiver, curMessageId), this.getSelf());
+		curMessageId++;
 	}
 
-	private void handle(PartialBytesMessage message) throws IOException, ClassNotFoundException {
+	private void handle(InitializeMessage message) {
+		this.receivedMessagesState.put(message.messageIdentifier, new MessageBuffer(message.sender, message.receiver, new byte[0]));
+		this.getSender().tell(new RequestNewChunkMessage(message.messageIdentifier, 0), this.getSelf());
+	}
+
+	private void handle(RequestNewChunkMessage message) {
+		byte[][] chunkedMessage = this.sendMessagesState.get(message.messageIdentifier);
+
+		if (message.chunkIdentifier < chunkedMessage.length) {
+			this.getSender().tell(new PartialBytesMessage(chunkedMessage[message.chunkIdentifier], message.messageIdentifier, message.chunkIdentifier), this.getSelf());
+		}
+		else {
+			this.getSender().tell(new FinishedMessage(message.messageIdentifier), this.getSelf());
+			this.sendMessagesState.remove(message.messageIdentifier);
+		}
+	}
+
+	private void handle(PartialBytesMessage message) {
 		// TODO: With option a): Store the message, ask for the next chunk and, if all chunks are present, reassemble the message's content, deserialize it and pass it to the receiver.
 		// The following code assumes that the transmitted bytes are the original message, which they shouldn't be in your proper implementation ;-)
-		if (globalMessageStore.length == 0) {
-			globalMessageStore = new byte[message.amount][CHUNK_SIZE];
-		}
-		messagesReceived += 1;
-		globalMessageStore[message.id] = message.bytes;
+		MessageBuffer currentBuffer = receivedMessagesState.get(message.messageIdentifier);
+		byte[] currentMessage = currentBuffer.messageBuffer;
+		currentBuffer.messageBuffer = new byte[currentMessage.length + message.bytes.length];
+		System.arraycopy(currentMessage, 0, currentBuffer.messageBuffer, 0, currentMessage.length);
+    System.arraycopy(message.bytes, 0, currentBuffer.messageBuffer, currentMessage.length, message.bytes.length);
+		this.getSender().tell(new RequestNewChunkMessage(message.messageIdentifier, message.chunkIdentifier + 1), this.getSelf());
+	}
 
-		if (messagesReceived == message.amount) {
-			byte[] newMessage = new byte[message.amount*CHUNK_SIZE];
-			for (byte[] msg : globalMessageStore) {
-				System.arraycopy(msg, 0, newMessage, CHUNK_SIZE*message.id, msg.length);
+	private void handle(FinishedMessage message) {
+		MessageBuffer buffer = receivedMessagesState.remove(message.messageIdentifier);
+		buffer.receiver.tell(kryo.fromBytes(buffer.messageBuffer), buffer.sender);
+	}
+
+	private byte[][] splitArray(byte[] msg) {
+		int amountOfChunks = (int)Math.ceil(msg.length / (double)CHUNK_SIZE);
+		int idx = 0;
+		int endIdx = 0;
+		byte[][] result = new byte[amountOfChunks][CHUNK_SIZE];
+		for(int i = 0; i < amountOfChunks; i++) {
+			if (i == amountOfChunks - 1) {
+				endIdx = idx + msg.length % CHUNK_SIZE;
 			}
-			Object deserializedMessage;
-			deserializedMessage = kryo.fromBytes(newMessage);
-			globalMessageStore = new byte[0][0];
-			messagesReceived = 0;
-			message.getReceiver().tell(deserializedMessage, message.getSender());
+			else {
+				endIdx = idx + CHUNK_SIZE;
+			}
+			result[i] = Arrays.copyOfRange(msg, idx, endIdx);
+			idx += CHUNK_SIZE;
 		}
+		return result;
 	}
 }
